@@ -108,7 +108,7 @@ or mixed-model corpus were written. This is retained as rollback evidence, not c
 successful throughput.
 
 Long E5 drains later exposed a process-local CUDA runtime failure after sustained request
-volume. The production mitigation recycles the one service process after 200 successful
+volume. The production mitigation recycles the one service process after 50 successful
 E5 requests and immediately after a CUDA runtime/OOM failure. This converts a persistent
 poisoned context into bounded `503` retry time while preserving single residency.
 

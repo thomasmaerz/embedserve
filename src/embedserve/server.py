@@ -90,7 +90,7 @@ class EmbeddingServerSettings:
     reservation_ttl_seconds: float = 10.0
     minimum_residency_seconds: float = 5.0
     retry_after_ms: int = 1500
-    e5_recycle_requests: int = 200
+    e5_recycle_requests: int = 50
     log_level: str = "info"
 
     def __post_init__(self) -> None:
@@ -163,7 +163,7 @@ class EmbeddingServerSettings:
                 os.getenv("EMBEDSERVE_MINIMUM_RESIDENCY_SECONDS", "5")
             ),
             retry_after_ms=int(os.getenv("EMBEDSERVE_RETRY_AFTER_MS", "1500")),
-            e5_recycle_requests=int(os.getenv("EMBEDSERVE_E5_RECYCLE_REQUESTS", "200")),
+            e5_recycle_requests=int(os.getenv("EMBEDSERVE_E5_RECYCLE_REQUESTS", "50")),
             log_level=os.getenv("EMBEDSERVE_LOG_LEVEL", "info"),
         )
 

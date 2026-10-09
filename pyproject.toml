@@ -1,6 +1,6 @@
 [project]
 name = "embedserve"
-version = "0.2.2"
+version = "0.2.3"
 description = "Authenticated, compatibility-focused PyTorch embedding service"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -32,7 +32,7 @@ Do not weaken authentication to avoid that outage.
   whether the previous model was restored.
 - `500 INFERENCE_FAILED`: stop the current batch and inspect
   `last_inference_failure`; never enable body logging.
-- scheduled E5 recycle: expected after 200 successful E5 requests; systemd restarts the
+- scheduled E5 recycle: expected after 50 successful E5 requests; systemd restarts the
   single process and clients continue from their bounded retry loop.
 - CUDA OOM: stop new work, capture VRAM/process metadata, restart once, then lower the
   batch size if the same synthetic request reproduces it.
