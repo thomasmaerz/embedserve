@@ -57,16 +57,25 @@ set +a
 uv run --frozen embedserve
 ```
 
-Probe with a key loaded from a private file without printing it:
+Probe with a key loaded from a private file without printing it or placing it in process
+arguments:
 
-```bash
-curl --fail --silent \
-  -H "Authorization: Bearer $(<.secrets/api-key)" \
-  http://127.0.0.1:11435/health
+```python
+import json
+import urllib.request
+from pathlib import Path
+
+key = Path(".secrets/api-key").read_text(encoding="ascii").strip()
+request = urllib.request.Request(
+    "http://127.0.0.1:11435/health",
+    headers={"Authorization": f"Bearer {key}"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    print(json.load(response)["status"])
 ```
 
-Avoid putting the key directly in command history. For managed deployment, use the
-key-file and systemd workflow in `docs/deployment.md` instead of the shell example.
+Run the snippet from a protected script or standard input. For managed deployment, use
+the key-file and systemd workflow in `docs/deployment.md`.
 
 ## Documentation
 
