@@ -218,6 +218,37 @@ async def test_cancelled_claimant_does_not_wedge_switch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_claimant_timeout_during_loading_does_not_wedge_switch() -> None:
+    runtime = Runtime()
+    runtime.load_started = asyncio.Event()
+    runtime.allow_load = asyncio.Event()
+    manager = coordinator(runtime)
+    active = await manager.acquire("nomic")
+    with pytest.raises(ModelBusy):
+        await manager.acquire("e5")
+    await active.release()
+
+    async def claim() -> None:
+        async with asyncio.timeout(0.01):
+            await manager.acquire("e5")
+
+    task = asyncio.create_task(claim())
+    await runtime.load_started.wait()
+    with pytest.raises(TimeoutError):
+        await task
+    runtime.allow_load.set()
+    for _ in range(20):
+        snapshot = await manager.snapshot()
+        if snapshot.loaded_model == "e5" and not snapshot.switch_in_progress:
+            break
+        await asyncio.sleep(0)
+    snapshot = await manager.snapshot()
+    assert snapshot.loaded_model == "e5"
+    assert snapshot.active_requests == 0
+    assert snapshot.reserved_model is None
+
+
+@pytest.mark.asyncio
 async def test_load_failure_restores_known_good_model() -> None:
     runtime = Runtime()
     runtime.fail_load.add("e5")
