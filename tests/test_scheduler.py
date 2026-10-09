@@ -152,8 +152,10 @@ async def test_abandoned_reservation_expires() -> None:
     resumed = await manager.acquire("nomic")
     await resumed.release()
     await active.release()
+    clock.advance(5)
     snapshot = await manager.snapshot()
     assert snapshot.reserved_model is None
+    assert snapshot.pending_model is None
     assert runtime.events == []
 
 
@@ -210,6 +212,13 @@ async def test_load_failure_restores_known_good_model() -> None:
         ("load", "nomic"),
     ]
 
+    runtime.fail_load.clear()
+    with pytest.raises(ModelBusy):
+        await manager.acquire("e5")
+    retry = await manager.acquire("e5")
+    await retry.release()
+    assert runtime.resident == {"e5"}
+
 
 @pytest.mark.asyncio
 async def test_cancellation_releases_active_counter() -> None:
@@ -230,3 +239,22 @@ async def test_cancellation_releases_active_counter() -> None:
     snapshot = await manager.snapshot()
     assert snapshot.active_requests == 0
     assert snapshot.state == CoordinatorState.READY
+
+
+@pytest.mark.asyncio
+async def test_restart_drops_abandoned_reservation() -> None:
+    runtime = Runtime()
+    before_restart = coordinator(runtime)
+    active = await before_restart.acquire("nomic")
+    with pytest.raises(ModelBusy):
+        await before_restart.acquire("e5")
+    await active.release()
+    assert (await before_restart.snapshot()).reserved_model == "e5"
+
+    after_restart = coordinator(runtime)
+    snapshot = await after_restart.snapshot()
+    assert snapshot.state == CoordinatorState.READY
+    assert snapshot.loaded_model == "nomic"
+    assert snapshot.reserved_model is None
+    nomic = await after_restart.acquire("nomic")
+    await nomic.release()
