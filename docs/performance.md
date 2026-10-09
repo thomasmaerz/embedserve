@@ -49,3 +49,29 @@ Batch 16 p95 exceeded the 15% review line by 0.6 percentage points while its p50
 throughput remained within 2% of baseline. Other batch p95 values improved or remained
 within 10%. This isolated tail sample is accepted as measurement variance rather than a
 material regression. Synthetic vectors matched the baseline exactly.
+
+## Phase 4 E5 feasibility
+
+Measured 2026-10-09 on the target P620 before service integration, using pinned
+`intfloat/multilingual-e5-base` revision
+`d128750597153bb5987e10b1c3493a34e5a4502a`, normalized output, synthetic text, and an
+internal encoder batch size of one:
+
+| Input count | Warm latency | Throughput |
+|---:|---:|---:|
+| 1 | 275 ms | 3.64 vectors/s |
+| 8 | 166 ms | 48.24 vectors/s |
+| 16 | 326 ms | 49.12 vectors/s |
+| 32 | 648 ms | 49.39 vectors/s |
+
+- cold E5 load: 2.73 seconds from cached files;
+- model CUDA allocation: approximately 1,112 MB;
+- peak CUDA allocation through batch 32: approximately 1,122 MB;
+- CUDA allocation after unload/cache clear: 8,519,680 bytes;
+- maximum model objects resident: one;
+- two-vector synthetic fixture SHA-256:
+  `aa8f7d8c3acff505084e9a013a5d3dbec976b447756545a4da97fcfe91e04ac2`.
+
+The model fits alone with measured headroom. The service conservatively keeps E5's
+internal batch size at one until integrated HTTP and switch benchmarks justify a higher
+value.
