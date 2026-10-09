@@ -38,6 +38,13 @@ Do not weaken authentication to avoid that outage.
   batch size if the same synthetic request reproduces it.
 - repeated restart: use `docs/rollback.md` before changing model or dependency pins.
 
+If host `nvidia-smi` hangs after a poisoned Pascal CUDA context, stop LXC 336 first.
+Stop host GPU monitoring and persistence, unload NVIDIA modules, write `1` to
+`/sys/bus/pci/devices/0000:00:01.0/reset_subordinate`, reload the modules, verify host
+`nvidia-smi`, then start the LXC and service. The upstream bridge reset recovered the
+tested P620 without rebooting unrelated workloads. Never reset the bus while the LXC or
+another GPU consumer is active.
+
 ## Monitoring scope
 
 For this LAN deployment, systemd state, structured HTTP status counts, request latency,
