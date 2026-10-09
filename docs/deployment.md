@@ -31,12 +31,14 @@ Use immutable release directories and a `current` symlink:
 ```text
 /opt/embedserve/releases/<git-commit>/
 /opt/embedserve/current -> releases/<git-commit>
+/opt/embedserve/venv/
 /etc/embedserve/embedserve.env
 /etc/embedserve/api-key
 /var/cache/embedserve/
 ```
 
-The environment file contains only non-secret settings. The key file is owned by the
+The shared virtual environment contains the locked runtime dependencies; each release's
+source is selected through `PYTHONPATH`. The environment file contains only non-secret settings. The key file is owned by the
 service user and mode `0600`. Generate it with `scripts/generate_api_key.py`; do not
 print, paste, or pass the key as an argument.
 

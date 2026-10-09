@@ -7,14 +7,15 @@ Wants=network-online.target
 Type=simple
 User=embedserve
 Group=embedserve
-SupplementaryGroups=video
+SupplementaryGroups=video render
 WorkingDirectory=/opt/embedserve/current
 EnvironmentFile=/etc/embedserve/embedserve.env
 Environment=HF_HOME=/var/cache/embedserve
 Environment=HUGGINGFACE_HUB_CACHE=/var/cache/embedserve/hub
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=OMP_NUM_THREADS=4
-ExecStart=/opt/embedserve/current/.venv/bin/embedserve
+Environment=PYTHONPATH=/opt/embedserve/current/src
+ExecStart=/opt/embedserve/venv/bin/python -m embedserve.server
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

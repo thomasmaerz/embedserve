@@ -10,6 +10,9 @@ Prepare rollback before changing the live symlink, unit, key, or client configur
 4. Run `systemctl daemon-reload && systemctl restart embedserve.service`.
 5. Verify authenticated health, tags, a synthetic vector, VRAM, and logs.
 
+If dependency pins changed, restore the preserved `/opt/embedserve/venv` artifact before
+restarting. Source-only releases may share the existing environment.
+
 ## API key
 
 During the bounded rotation window, preserve the prior mode-`0600` files on server and
