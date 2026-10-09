@@ -137,3 +137,17 @@ def test_failed_load_releases_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
         runtime.load(E5)
     assert runtime.loaded_model is None
     assert cuda.empty_cache_calls == 1
+
+
+def test_inference_failure_records_sanitized_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, _, factory = make_runtime(monkeypatch)
+    runtime.load(E5)
+
+    def fail(*_: object, **__: object) -> None:
+        raise RuntimeError("CUDA out of memory while processing private input")
+
+    factory.models[-1].encode = fail  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        runtime.encode(E5, ["passage: synthetic"], 1)
+    assert runtime.last_inference_failure == "CUDA_OUT_OF_MEMORY"
+    assert runtime.inference_failure_count == 1

@@ -45,6 +45,8 @@ class Runtime(Protocol):
     loaded_model: str | None
     max_resident_models_observed: int
     last_unload_allocated_bytes: int | None
+    last_inference_failure: str | None
+    inference_failure_count: int
 
     def load(self, model: str) -> None: ...
 
@@ -82,6 +84,8 @@ class SentenceTransformerRuntime:
         self.loaded_model: str | None = None
         self.max_resident_models_observed = 0
         self.last_unload_allocated_bytes: int | None = None
+        self.last_inference_failure: str | None = None
+        self.inference_failure_count = 0
         self._settings = settings
         self._torch = torch
         self._factory = SentenceTransformer
@@ -169,10 +173,19 @@ class SentenceTransformerRuntime:
                     convert_to_numpy=True,
                     normalize_embeddings=spec.normalize_embeddings,
                 )
-        except Exception:
+        except Exception as error:
+            message = str(error).lower()
+            if "out of memory" in message:
+                self.last_inference_failure = "CUDA_OUT_OF_MEMORY"
+            elif "cuda" in message or "cublas" in message or "cudnn" in message:
+                self.last_inference_failure = "CUDA_RUNTIME_ERROR"
+            else:
+                self.last_inference_failure = type(error).__name__
+            self.inference_failure_count += 1
             if self.device == "cuda":
                 self._torch.cuda.empty_cache()
             raise
+        self.last_inference_failure = None
         rows = cast(list[list[float]], values.tolist())
         return [[float(value) for value in row] for row in rows]
 

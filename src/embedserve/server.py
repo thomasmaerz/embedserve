@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -38,6 +39,7 @@ DEFAULT_MODEL_ALIAS = "nomic-embed-text:v1.5"
 DEFAULT_MODEL_DIGEST = "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
+log = logging.getLogger("embedserve")
 
 
 def _validated_key(value: str) -> str:
@@ -340,6 +342,12 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
                 await task
                 raise
             except Exception:
+                log.error(
+                    "inference failed model=%s category=%s failures=%d",
+                    model,
+                    runtime.last_inference_failure or "UNKNOWN",
+                    runtime.inference_failure_count,
+                )
                 return JSONResponse(
                     {
                         "error": {
@@ -378,6 +386,8 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
                     "switch_in_progress": snapshot.switch_in_progress,
                     "single_residency_verified": runtime.max_resident_models_observed <= 1,
                     "last_unload_allocated_bytes": runtime.last_unload_allocated_bytes,
+                    "last_inference_failure": runtime.last_inference_failure,
+                    "inference_failure_count": runtime.inference_failure_count,
                 },
             }
         )

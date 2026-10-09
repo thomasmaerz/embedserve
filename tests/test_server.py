@@ -28,6 +28,8 @@ class FakeRuntime:
         self.loaded_model: str | None = NOMIC
         self.max_resident_models_observed = 1
         self.last_unload_allocated_bytes: int | None = None
+        self.last_inference_failure: str | None = None
+        self.inference_failure_count = 0
         self.seen: list[tuple[str, str]] = []
         self.events: list[tuple[str, str]] = []
         self.fail_load: set[str] = set()
@@ -56,6 +58,8 @@ class FakeRuntime:
         if self.allow_encode is not None:
             self.allow_encode.wait(timeout=5)
         if self.fail_encode:
+            self.last_inference_failure = "RuntimeError"
+            self.inference_failure_count += 1
             raise RuntimeError("synthetic inference failure")
         self.seen.extend((model, text) for text in texts)
         return [
@@ -168,6 +172,8 @@ def test_health_and_tags_preserve_identity(
             "switch_in_progress": False,
             "single_residency_verified": True,
             "last_unload_allocated_bytes": None,
+            "last_inference_failure": None,
+            "inference_failure_count": 0,
         },
     }
     model = tags.json()["models"][0]
