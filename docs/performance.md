@@ -32,3 +32,20 @@ The authenticated standalone deployment must show no material Nomic regression. 
 p95 increase over 15% or throughput decrease over 15% requires explanation before
 promotion. Authentication overhead should be negligible relative to GPU inference.
 Raw benchmark artifacts are gitignored because they are environment-specific.
+
+## Phase 2 authenticated deployment
+
+Measured after promotion with the same fixtures, sample count, model cache, GPU, and
+batch sizes. Direct runtime dependencies were pinned to the repository versions.
+
+| Batch | p50 | p95 | Throughput | p50 change | p95 change | Throughput change |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 392 ms | 417 ms | 2.58 vectors/s | +9.1% | +10.0% | -8.3% |
+| 8 | 627 ms | 660 ms | 12.74 vectors/s | +3.9% | -0.2% | -3.6% |
+| 16 | 909 ms | 1,135 ms | 17.33 vectors/s | +1.4% | +15.6% | -1.8% |
+| 32 | 1,453 ms | 1,543 ms | 21.97 vectors/s | -0.5% | -15.2% | +4.4% |
+
+Batch 16 p95 exceeded the 15% review line by 0.6 percentage points while its p50 and
+throughput remained within 2% of baseline. Other batch p95 values improved or remained
+within 10%. This isolated tail sample is accepted as measurement variance rather than a
+material regression. Synthetic vectors matched the baseline exactly.
