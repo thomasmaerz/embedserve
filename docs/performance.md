@@ -98,14 +98,16 @@ window. The range was 6.03-11.27 seconds after excluding an already-loaded E5 re
 - stage: 10,000 jobs in 2,728 seconds, zero failures;
 - stable observed rate: approximately 3.4-3.7 jobs/s;
 - projected 321,236-job initial corpus: approximately 24-26 hours;
-- current measured corpus: 11,611 jobs and 29,480 chunks, all 768-dimensional,
-  unit-normalized, current-model, and content-hash current;
+- current measured corpus: 13,539 jobs and 33,946 chunks, all 768-dimensional,
+  unit-normalized, and one E5 model identity; 13,274 jobs are content-hash current and
+  265 changed after embedding, so retrieval excludes them until re-embedded;
 - projected chunk count at current ratio: approximately 808,000.
 
-An attempted 50,000-job stage accidentally used an older artifact and failed fast. Its
-50,000 live outbox rows were reset to attempt zero after diagnosis; no failed vector rows
-or mixed-model corpus were written. This is retained as rollback evidence, not counted as
-successful throughput.
+Invalid bulk attempts were stopped after an incompatible worker/schema combination and,
+later, a poisoned process-local CUDA context. Their live outbox attempts and dead-letter
+state were reset after diagnosis; no failed vector rows or mixed-model corpus were
+written. The current queue contains 50,855 clean, unclaimed rows. These attempts are
+retained as rollback evidence and are not counted as successful throughput.
 
 Long E5 drains later exposed a process-local CUDA runtime failure after sustained request
 volume. The production mitigation recycles the one service process after 50 successful
