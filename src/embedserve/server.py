@@ -379,6 +379,21 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
                 "device": runtime.device,
                 "gpu": runtime.gpu_name,
                 "native_dimension": NATIVE_DIMENSION,
+                "models": {
+                    NOMIC: {
+                        "id": settings.model_id,
+                        "revision": settings.model_revision,
+                        "code_revision": settings.code_revision,
+                        "normalized": False,
+                        "max_seq_length": 2048,
+                    },
+                    E5: {
+                        "id": settings.e5_model_id,
+                        "revision": settings.e5_model_revision,
+                        "normalized": True,
+                        "max_seq_length": 512,
+                    },
+                },
                 "scheduler": {
                     "state": snapshot.state,
                     "loaded_model": snapshot.loaded_model,

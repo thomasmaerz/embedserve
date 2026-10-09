@@ -165,6 +165,21 @@ def test_health_and_tags_preserve_identity(
         "device": "cuda",
         "gpu": "Test GPU",
         "native_dimension": 768,
+        "models": {
+            "nomic": {
+                "id": settings.model_id,
+                "revision": settings.model_revision,
+                "code_revision": settings.code_revision,
+                "normalized": False,
+                "max_seq_length": 2048,
+            },
+            "e5": {
+                "id": settings.e5_model_id,
+                "revision": settings.e5_model_revision,
+                "normalized": True,
+                "max_seq_length": 512,
+            },
+        },
         "scheduler": {
             "state": "READY",
             "loaded_model": "nomic",
