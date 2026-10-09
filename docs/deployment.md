@@ -59,6 +59,10 @@ systemctl status embedserve.service
 Do not add arbitrary memory or CPU limits. Measure cold load and peak batches first,
 then set limits above observed peaks if the host needs containment.
 
+The tested P620 LXC was increased from 2 GiB to 4 GiB after integrated switching and
+FreeHire work measured an approximately 2.96 GB cgroup peak. This is measured headroom,
+not a portable default. The GPU remains 2 GiB and permits only one loaded model.
+
 ## Network
 
 Bind `0.0.0.0` only when remote LAN clients require it. Restrict TCP `11435` to the

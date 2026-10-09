@@ -10,14 +10,17 @@ fixed, accepted, or deferred.
 | Arbitrary model loading | Fixed | Exact model ID and alias allowlist |
 | Model provenance | Fixed | Weight and remote-code commits pinned separately |
 | Request abuse | Fixed | Body, item, character, model, dimension, and format limits |
-| Duplicate GPU loads | Fixed | One systemd process, one Uvicorn worker, one encoder |
+| Duplicate GPU loads | Fixed | One process, one synchronized coordinator, runtime overlap assertion |
 | Service privilege | Fixed | Dedicated user with only required cache and GPU access |
 | Logs | Fixed | No application logging of headers, key, or input text |
 | Plain HTTP | Accepted | Trusted isolated LAN; add TLS/VPN before boundary changes |
-| Host firewall | Deployment fix | Permit only approved consumer hosts on TCP `11435` |
+| Host firewall | Fixed | TCP `11435` permits only local and ETL client sources |
 | `trust_remote_code` | Accepted with control | Required by Nomic; exact reviewed code commit pinned |
 | Dependency drift | Fixed | `uv.lock` plus exact direct dependency pins |
 | Distributed rate limiting | Deferred | No realistic current need; bounded requests and one lock |
+| FreeHire query service | Fixed | Loopback-only on ETL; no public/LAN listener |
+| Scheduler state exposure | Fixed | Health exposes bounded state/counters, not paths or queue contents |
+| Failure detail | Fixed | Errors/logs use sanitized categories without input text or stack traces |
 
 Unauthenticated public access, committed credentials, secret-bearing logs, arbitrary
 model selection, and unpinned remote code are not acceptable.

@@ -27,8 +27,15 @@ or ETL process, run `slackquery embedding-status`, then run representative lexic
 semantic, and hybrid searches. The legacy source copy is not a deployment rollback;
 use the preserved deployable release artifact.
 
-## Partial operations
+## FreeHire client and query endpoint
 
-Phase 1 does not migrate stored vectors, so rollback requires no data rewrite. Later E5
-backfills must retain model/content provenance and delete or isolate only rows from the
-aborted generation; never mix old and new model vectors.
+Stop the `embed` worker and `semantic-agent`, restore the prior FreeHire extension
+release and Compose override, and restore `/opt/freehire/embed.env` if its URL or key
+changed. Verify lexical search still works before restarting any embedding stage.
+
+For a partially completed E5 generation, preserve a database backup. In one reviewed
+transaction, delete `job_semantic_chunks` only for jobs stamped with
+`intfloat/multilingual-e5-base-chunked-v1`, clear those jobs' semantic model/hash stamps,
+and clear matching live outbox rows. Never relabel vectors or mix model identities. If
+the E5 corpus remains intact, the query endpoint can be disabled independently without
+deleting vectors.

@@ -10,6 +10,9 @@
 | dimension mismatch | Wrong model or upstream change | Stop deployment; never coerce a different model |
 | slow first request | cold model/cache/CUDA startup | Use health readiness and compare load baseline |
 | `413` | caller exceeded body limit | reduce batch/body before considering a measured limit change |
+| `503 MODEL_BUSY` | alternate model owns or reserved the GPU | honor `Retry-After`; inspect repeated switching only if retry budget exhausts |
+| `503 MODEL_LOAD_FAILED` | target load failed | check restored model in response and sanitized health failure state |
+| `500 INFERENCE_FAILED` | encoder/CUDA failure | stop batch, inspect sanitized category, restart or lower measured batch |
 | GPU OOM | batch or duplicate process | verify one PID, reduce batch, restart, remeasure |
 | remote timeout | bind/firewall/route | verify private address and source allowlist |
 

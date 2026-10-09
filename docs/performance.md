@@ -75,3 +75,42 @@ internal encoder batch size of one:
 The model fits alone with measured headroom. The service conservatively keeps E5's
 internal batch size at one until integrated HTTP and switch benchmarks justify a higher
 value.
+
+## Integrated E5 HTTP
+
+Ten warm synthetic samples per input count through authenticated `/embed`:
+
+| Input count | p50 | p95 | Throughput |
+|---:|---:|---:|---:|
+| 1 | 369 ms | 377 ms | 2.77 vectors/s |
+| 8 | 667 ms | 718 ms | 11.87 vectors/s |
+| 16 | 1,003 ms | 1,194 ms | 15.18 vectors/s |
+| 32 | 1,721 ms | 1,909 ms | 18.34 vectors/s |
+
+Three alternating synthetic switch cycles measured median 9.79 seconds Nomic-to-E5 and
+9.05 seconds E5-to-Nomic, including reservation retries and the five-second anti-thrash
+window. The range was 6.03-11.27 seconds after excluding an already-loaded E5 request.
+
+## FreeHire stages
+
+- canary: 5 jobs, 12 chunks, 8 seconds, zero failures;
+- stage: 1,000 jobs in 292 seconds, zero failures;
+- stage: 10,000 jobs in 2,728 seconds, zero failures;
+- stable observed rate: approximately 3.4-3.7 jobs/s;
+- projected 321,236-job initial corpus: approximately 24-26 hours;
+- current measured corpus: 11,611 jobs and 29,480 chunks, all 768-dimensional,
+  unit-normalized, current-model, and content-hash current;
+- projected chunk count at current ratio: approximately 808,000.
+
+An attempted 50,000-job stage accidentally used an older artifact and failed fast. Its
+50,000 live outbox rows were reset to attempt zero after diagnosis; no failed vector rows
+or mixed-model corpus were written. This is retained as rollback evidence, not counted as
+successful throughput.
+
+Interactive SlackQuery remained usable during a stable FreeHire stage: the first query
+paid a 4.80-second model handoff, followed by four 142-154 ms warm queries. The reservation
+and retry design therefore bounds switch delay while preserving warm interactive latency.
+
+The LXC was raised from 2 GiB to 4 GiB only after measured cgroup memory reached about
+2.96 GB during switching/backfill. No CPU limit was added. GPU peak during the canary was
+1,203 MiB, with no model overlap.

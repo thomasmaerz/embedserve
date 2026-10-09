@@ -88,6 +88,7 @@ the key-file and systemd workflow in `docs/deployment.md`.
 - `docs/api.md` - exact requests, responses, limits, and errors
 - `docs/compatibility.md` - SlackQuery/Nomic compatibility matrix
 - `docs/deployment.md` - CUDA and systemd deployment
+- `docs/freehire-integration.md` - E5 worker and semantic candidate integration
 - `docs/operations.md` - monitoring, rotation, and incident operations
 - `docs/model-lifecycle.md` - pinning, loading, and vector-space invariants
 - `docs/performance.md` - Quadro P620 baseline measurements

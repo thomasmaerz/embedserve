@@ -12,12 +12,16 @@ draw.io file inline; the equivalent Mermaid view is included here.
 ```mermaid
 flowchart LR
   SQ[SlackQuery client] -->|Bearer + Ollama shape| FW[LAN source restriction]
+  FH[FreeHire worker] -->|Bearer + TEI shape| FW
   OA[OpenAI-compatible client] -->|Bearer + OpenAI shape| FW
   FW --> AUTH[Bearer auth middleware]
   AUTH --> LIMITS[Body, batch, model, and option validation]
-  LIMITS --> LOCK[Single inference lock]
-  LOCK --> MODEL[Pinned Nomic encoder]
-  MODEL --> GPU[One CUDA-resident model]
+  LIMITS --> SCHED[Fair intent + switch reservation]
+  SCHED --> LOCK[Single inference lock]
+  LOCK --> N[Pinned Nomic encoder]
+  LOCK --> E[Pinned E5 encoder]
+  N --> GPU[Exactly one CUDA-resident model]
+  E --> GPU
 ```
 
 ## Boundaries
@@ -25,8 +29,8 @@ flowchart LR
 - Clients own text semantics. SlackQuery adds task prefixes and post-processes vectors.
 - The API owns authentication, request limits, model allowlisting, serialization, and
   single-process inference admission.
-- The encoder owns pinned model loading, the 2048-token limit, raw FP32 inference, and
-  native-dimension validation.
+- The runtime owns pinned model loading, Nomic's 2048-token/raw contract, E5's
+  512-token/normalized contract, unload cleanup, and native-dimension validation.
 - systemd owns one-process enforcement, restart behavior, filesystem restrictions, and
   the model-cache directory.
 - Network policy owns source-host restriction. The bearer key is defense in depth, not
@@ -34,6 +38,9 @@ flowchart LR
 
 ## Current state
 
-Release `0.1.x` loads Nomic once at startup. There is no dynamic model endpoint and no
-arbitrary remote loading. A later release will add E5 behind a synchronized coordinator;
-until that state machine is implemented and tested, this service remains Nomic-only.
+Release `0.2.x` starts with Nomic and switches only between two pinned allowlisted
+models. Request data cannot load arbitrary repositories. Alternate intent blocks fresh
+old-model admissions, reserves a bounded handoff, unloads the old model, verifies CUDA
+allocator release, and loads the alternate model once. The first claimant's cancellation
+cannot cancel the internal switch task. Abandoned reservations expire and a minimum
+residency window limits thrashing.
