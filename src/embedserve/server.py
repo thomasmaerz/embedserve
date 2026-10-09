@@ -78,6 +78,7 @@ class EmbeddingServerSettings:
     model_digest: str = DEFAULT_MODEL_DIGEST
     e5_model_id: str = E5_MODEL_ID
     e5_model_revision: str = E5_MODEL_REVISION
+    initial_model: str = NOMIC
     batch_size: int = 32
     e5_batch_size: int = 1
     max_items: int = 256
@@ -101,6 +102,8 @@ class EmbeddingServerSettings:
             raise ValueError(f"unsupported model alias: {self.model_alias}")
         if self.e5_model_id != E5_MODEL_ID:
             raise ValueError(f"unsupported E5 model: {self.e5_model_id}")
+        if self.initial_model not in {NOMIC, E5}:
+            raise ValueError("initial_model must be nomic or e5")
         for name, revision in {
             "Nomic model": self.model_revision,
             "Nomic code": self.code_revision,
@@ -144,6 +147,7 @@ class EmbeddingServerSettings:
             model_digest=os.getenv("EMBEDSERVE_MODEL_DIGEST", DEFAULT_MODEL_DIGEST),
             e5_model_id=os.getenv("EMBEDSERVE_E5_MODEL_ID", E5_MODEL_ID),
             e5_model_revision=os.getenv("EMBEDSERVE_E5_MODEL_REVISION", E5_MODEL_REVISION),
+            initial_model=os.getenv("EMBEDSERVE_INITIAL_MODEL", NOMIC),
             batch_size=int(os.getenv("EMBEDSERVE_BATCH_SIZE", "32")),
             e5_batch_size=int(os.getenv("EMBEDSERVE_E5_BATCH_SIZE", "1")),
             max_items=int(os.getenv("EMBEDSERVE_MAX_ITEMS", "256")),
@@ -534,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = EmbeddingServerSettings.from_env()
         runtime = SentenceTransformerRuntime(settings)
-        runtime.load(NOMIC)
+        runtime.load(settings.initial_model)
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     uvicorn.run(

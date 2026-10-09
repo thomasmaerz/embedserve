@@ -8,6 +8,11 @@ and pinned reviewed remote code before opening the HTTP listener. It sets
 first switch. One Uvicorn worker and one inference lock prevent accidental duplicate
 loads and concurrent calls into the small GPU.
 
+`EMBEDSERVE_INITIAL_MODEL` defaults to `nomic`. A measured FreeHire bulk-backfill window
+may set it to `e5` so preventive process recycles reload the active bulk model directly;
+interactive Nomic requests still reserve and perform the same safe handoff. Restore the
+default after the bulk stage.
+
 The API's compatibility digest is not a loader revision. It remains stable so existing
 SlackQuery vector generations remain identifiable. Weight and remote-code revisions are
 separate settings and health fields.

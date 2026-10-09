@@ -292,6 +292,8 @@ def test_settings_reject_insecure_key_file(
 def test_settings_reject_arbitrary_model() -> None:
     with pytest.raises(ValueError, match="unsupported Nomic model"):
         EmbeddingServerSettings(api_key="a-secure-test-key", model_id="other/model")
+    with pytest.raises(ValueError, match="initial_model"):
+        EmbeddingServerSettings(api_key="a-secure-test-key", initial_model="arbitrary")
 
 
 def test_tei_contract_switches_to_e5_without_changing_inputs(
