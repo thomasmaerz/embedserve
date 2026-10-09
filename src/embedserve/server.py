@@ -20,6 +20,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from embedserve.scheduler import ModelBusy
+
 NATIVE_DIMENSION = 768
 DEFAULT_MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
 DEFAULT_MODEL_ALIAS = "nomic-embed-text:v1.5"
@@ -172,6 +174,14 @@ def _unauthorized() -> JSONResponse:
         {"error": {"message": "invalid or missing API key", "type": "authentication_error"}},
         status_code=401,
         headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def model_busy_response(error: ModelBusy) -> JSONResponse:
+    return JSONResponse(
+        error.payload(),
+        status_code=503,
+        headers={"Retry-After": str(error.retry_after_seconds)},
     )
 
 

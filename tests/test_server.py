@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from embedserve.scheduler import CoordinatorState, ModelBusy
 from embedserve.server import (
     NATIVE_DIMENSION,
     EmbeddingServerSettings,
     create_embedding_app,
+    model_busy_response,
 )
 
 
@@ -70,6 +73,28 @@ def test_every_endpoint_requires_authentication(
 @pytest.mark.parametrize("value", ["Bearer wrong", "Basic value", "Bearer", "bearer wrong"])
 def test_invalid_authorization_is_rejected(client: TestClient, value: str) -> None:
     assert client.get("/health", headers={"Authorization": value}).status_code == 401
+
+
+def test_model_busy_response_is_retryable_and_machine_readable() -> None:
+    response = model_busy_response(
+        ModelBusy(
+            loaded_model="nomic",
+            requested_model="e5",
+            state=CoordinatorState.SWITCH_RESERVED,
+            retry_after_ms=1500,
+        )
+    )
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "2"
+    assert json.loads(response.body)["error"] == {
+        "code": "MODEL_BUSY",
+        "message": "Requested model is waiting for the active model to finish.",
+        "retryable": True,
+        "loaded_model": "nomic",
+        "requested_model": "e5",
+        "state": "SWITCH_RESERVED",
+        "retry_after_ms": 1500,
+    }
 
 
 def test_key_is_not_logged(
