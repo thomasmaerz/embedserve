@@ -98,21 +98,25 @@ window. The range was 6.03-11.27 seconds after excluding an already-loaded E5 re
 - stage: 10,000 jobs in 2,728 seconds, zero failures;
 - stable observed rate: approximately 3.4-3.7 jobs/s;
 - projected 321,236-job initial corpus: approximately 24-26 hours;
-- current measured corpus: 13,539 jobs and 33,946 chunks, all 768-dimensional,
-  unit-normalized, and one E5 model identity; 13,274 jobs are content-hash current and
-  265 changed after embedding, so retrieval excludes them until re-embedded;
+- current measured corpus: 15,138 jobs and 37,975 chunks, all 768-dimensional,
+  unit-normalized, and one E5 model identity; 15,137 jobs are content-hash current and
+  one changed after embedding, so retrieval excludes it until re-embedded;
 - projected chunk count at current ratio: approximately 808,000.
 
 Invalid bulk attempts were stopped after an incompatible worker/schema combination and,
 later, a poisoned process-local CUDA context. Their live outbox attempts and dead-letter
 state were reset after diagnosis; no failed vector rows or mixed-model corpus were
-written. The current queue contains 50,855 clean, unclaimed rows. These attempts are
+written. The current queue contains 49,461 clean, unclaimed rows. These attempts are
 retained as rollback evidence and are not counted as successful throughput.
 
 Long E5 drains later exposed a process-local CUDA runtime failure after sustained request
 volume. The production mitigation recycles the one service process after 50 successful
 E5 requests and immediately after a CUDA runtime/OOM failure. This converts a persistent
 poisoned context into bounded `503` retry time while preserving single residency.
+
+The corrected recycle protocol stops new admissions before exit and starts E5 directly
+during a bulk window. A 1,000-entry verification stage completed in 299 seconds with
+933 jobs embedded, 67 stale/closed entries removed, and zero failures or dead letters.
 
 Interactive SlackQuery remained usable during a stable FreeHire stage: the first query
 paid a 4.80-second model handoff, followed by four 142-154 ms warm queries. The reservation
