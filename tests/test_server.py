@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import threading
@@ -30,10 +31,12 @@ class FakeRuntime:
         self.last_unload_allocated_bytes: int | None = None
         self.last_inference_failure: str | None = None
         self.inference_failure_count = 0
+        self._successful_requests = {NOMIC: 0, E5: 0}
         self.seen: list[tuple[str, str]] = []
         self.events: list[tuple[str, str]] = []
         self.fail_load: set[str] = set()
         self.fail_encode = False
+        self.failure_category = "RuntimeError"
         self.encode_started: threading.Event | None = None
         self.allow_encode: threading.Event | None = None
 
@@ -58,14 +61,18 @@ class FakeRuntime:
         if self.allow_encode is not None:
             self.allow_encode.wait(timeout=5)
         if self.fail_encode:
-            self.last_inference_failure = "RuntimeError"
+            self.last_inference_failure = self.failure_category
             self.inference_failure_count += 1
             raise RuntimeError("synthetic inference failure")
         self.seen.extend((model, text) for text in texts)
+        self._successful_requests[model] += 1
         return [
             [float(index + 1)] + [0.0] * (NATIVE_DIMENSION - 1)
             for index, _ in enumerate(texts)
         ]
+
+    def successful_requests(self, model: str) -> int:
+        return self._successful_requests[model]
 
 
 @pytest.fixture
@@ -189,6 +196,8 @@ def test_health_and_tags_preserve_identity(
             "last_unload_allocated_bytes": None,
             "last_inference_failure": None,
             "inference_failure_count": 0,
+            "successful_requests": {"nomic": 0, "e5": 0},
+            "restart_scheduled": False,
         },
     }
     model = tags.json()["models"][0]
@@ -407,3 +416,48 @@ def test_inference_failure_is_sanitized_and_releases_admission(
     runtime.fail_encode = False
     health = client.get("/health", headers=auth(settings))
     assert health.json()["scheduler"]["active_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cuda_failure_is_retryable_and_schedules_recycle(
+    settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    restarted = asyncio.Event()
+    runtime.fail_encode = True
+    runtime.failure_category = "CUDA_RUNTIME_ERROR"
+
+    def restart() -> None:
+        restarted.set()
+
+    app = create_embedding_app(settings, runtime, restart_process=restart)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://embedserve"
+    ) as http:
+        failed = await http.post(
+            "/api/embed", headers=auth(settings), json={"input": ["search_query: synthetic"]}
+        )
+        health = await http.get("/health", headers=auth(settings))
+    assert failed.status_code == 503
+    assert failed.headers["Retry-After"] == "5"
+    assert failed.json()["error"]["retryable"] is True
+    assert health.json()["scheduler"]["restart_scheduled"] is True
+
+
+def test_e5_request_budget_schedules_recycle(
+    settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    settings = dataclasses.replace(settings, e5_recycle_requests=1)
+    restarts = 0
+
+    def restart() -> None:
+        nonlocal restarts
+        restarts += 1
+
+    client = TestClient(create_embedding_app(settings, runtime, restart_process=restart))
+    payload = {"inputs": ["passage: synthetic"]}
+    assert client.post("/embed", headers=auth(settings), json=payload).status_code == 503
+    assert client.post("/embed", headers=auth(settings), json=payload).status_code == 200
+    health = client.get("/health", headers=auth(settings)).json()
+    assert health["scheduler"]["restart_scheduled"] is True
+    assert health["scheduler"]["successful_requests"]["e5"] == 1
+    assert restarts == 0

@@ -21,6 +21,7 @@ fixed, accepted, or deferred.
 | FreeHire query service | Fixed | Loopback-only on ETL; no public/LAN listener |
 | Scheduler state exposure | Fixed | Health exposes bounded state/counters, not paths or queue contents |
 | Failure detail | Fixed | Errors/logs use sanitized categories without input text or stack traces |
+| CUDA recovery | Fixed | Retryable failure plus one-process systemd recycle; no overlapping recovery worker |
 
 Unauthenticated public access, committed credentials, secret-bearing logs, arbitrary
 model selection, and unpinned remote code are not acceptable.

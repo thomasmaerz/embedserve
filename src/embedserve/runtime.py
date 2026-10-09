@@ -48,6 +48,8 @@ class Runtime(Protocol):
     last_inference_failure: str | None
     inference_failure_count: int
 
+    def successful_requests(self, model: str) -> int: ...
+
     def load(self, model: str) -> None: ...
 
     def unload(self, model: str) -> None: ...
@@ -86,6 +88,7 @@ class SentenceTransformerRuntime:
         self.last_unload_allocated_bytes: int | None = None
         self.last_inference_failure: str | None = None
         self.inference_failure_count = 0
+        self._successful_requests = {NOMIC: 0, E5: 0}
         self._settings = settings
         self._torch = torch
         self._factory = SentenceTransformer
@@ -186,8 +189,12 @@ class SentenceTransformerRuntime:
                 self._torch.cuda.empty_cache()
             raise
         self.last_inference_failure = None
+        self._successful_requests[model] += 1
         rows = cast(list[list[float]], values.tolist())
         return [[float(value) for value in row] for row in rows]
+
+    def successful_requests(self, model: str) -> int:
+        return self._successful_requests[model]
 
     def _release_cuda(self) -> None:
         gc.collect()

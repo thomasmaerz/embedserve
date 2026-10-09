@@ -107,6 +107,11 @@ An attempted 50,000-job stage accidentally used an older artifact and failed fas
 or mixed-model corpus were written. This is retained as rollback evidence, not counted as
 successful throughput.
 
+Long E5 drains later exposed a process-local CUDA runtime failure after sustained request
+volume. The production mitigation recycles the one service process after 200 successful
+E5 requests and immediately after a CUDA runtime/OOM failure. This converts a persistent
+poisoned context into bounded `503` retry time while preserving single residency.
+
 Interactive SlackQuery remained usable during a stable FreeHire stage: the first query
 paid a 4.80-second model handoff, followed by four 142-154 ms warm queries. The reservation
 and retry design therefore bounds switch delay while preserving warm interactive latency.

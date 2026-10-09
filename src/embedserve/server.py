@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,6 +90,7 @@ class EmbeddingServerSettings:
     reservation_ttl_seconds: float = 10.0
     minimum_residency_seconds: float = 5.0
     retry_after_ms: int = 1500
+    e5_recycle_requests: int = 200
     log_level: str = "info"
 
     def __post_init__(self) -> None:
@@ -126,6 +128,8 @@ class EmbeddingServerSettings:
             raise ValueError("minimum residency must not be negative")
         if self.retry_after_ms <= 0:
             raise ValueError("retry_after_ms must be positive")
+        if self.e5_recycle_requests < 1:
+            raise ValueError("e5_recycle_requests must be positive")
 
     @classmethod
     def from_env(cls) -> EmbeddingServerSettings:
@@ -159,6 +163,7 @@ class EmbeddingServerSettings:
                 os.getenv("EMBEDSERVE_MINIMUM_RESIDENCY_SECONDS", "5")
             ),
             retry_after_ms=int(os.getenv("EMBEDSERVE_RETRY_AFTER_MS", "1500")),
+            e5_recycle_requests=int(os.getenv("EMBEDSERVE_E5_RECYCLE_REQUESTS", "200")),
             log_level=os.getenv("EMBEDSERVE_LOG_LEVEL", "info"),
         )
 
@@ -216,8 +221,23 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) -> ASGIApp:
+def create_embedding_app(
+    settings: EmbeddingServerSettings,
+    runtime: Runtime,
+    *,
+    restart_process: Callable[[], None] | None = None,
+) -> ASGIApp:
     inference_lock = asyncio.Lock()
+    restart_scheduled = False
+    restart_process = restart_process or (lambda: os._exit(75))
+
+    def schedule_restart(reason: str) -> None:
+        nonlocal restart_scheduled
+        if restart_scheduled:
+            return
+        restart_scheduled = True
+        log.warning("scheduled process recycle reason=%s", reason)
+        asyncio.get_running_loop().call_later(2.0, restart_process)
 
     async def load_model(model: str) -> None:
         await asyncio.to_thread(runtime.load, model)
@@ -348,15 +368,22 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
                     runtime.last_inference_failure or "UNKNOWN",
                     runtime.inference_failure_count,
                 )
+                cuda_failure = runtime.last_inference_failure in {
+                    "CUDA_OUT_OF_MEMORY",
+                    "CUDA_RUNTIME_ERROR",
+                }
+                if cuda_failure:
+                    schedule_restart("cuda_inference_failure")
                 return JSONResponse(
                     {
                         "error": {
                             "code": "INFERENCE_FAILED",
                             "message": "Embedding inference failed.",
-                            "retryable": False,
+                            "retryable": cuda_failure,
                         }
                     },
-                    status_code=500,
+                    status_code=503 if cuda_failure else 500,
+                    headers={"Retry-After": "5"} if cuda_failure else None,
                 )
         if len(vectors) != len(texts) or any(
             len(vector) != NATIVE_DIMENSION
@@ -364,6 +391,8 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
             for vector in vectors
         ):
             return JSONResponse({"error": "encoder returned invalid vector dimensions"}, 500)
+        if model == E5 and runtime.successful_requests(E5) >= settings.e5_recycle_requests:
+            schedule_restart("e5_request_budget")
         return vectors
 
     async def health(_: Request) -> Response:
@@ -403,6 +432,11 @@ def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) ->
                     "last_unload_allocated_bytes": runtime.last_unload_allocated_bytes,
                     "last_inference_failure": runtime.last_inference_failure,
                     "inference_failure_count": runtime.inference_failure_count,
+                    "successful_requests": {
+                        NOMIC: runtime.successful_requests(NOMIC),
+                        E5: runtime.successful_requests(E5),
+                    },
+                    "restart_scheduled": restart_scheduled,
                 },
             }
         )

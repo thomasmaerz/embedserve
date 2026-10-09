@@ -40,6 +40,10 @@ its 2048-token limit and raw output; E5 uses its 512-token limit and normalized 
 Alternate-model contention returns documented `503 MODEL_BUSY` responses so clients can
 retry with bounded full jitter.
 
+On the tested Pascal stack, the service periodically recycles its single process during
+long E5 drains to avoid a persistent CUDA context failure. systemd restarts it; bounded
+client retries preserve work without ever starting a second GPU model process.
+
 ## Quick start
 
 Python 3.11 or 3.12 is required. The Quadro P620 deployment uses the CUDA 12.1 wheel

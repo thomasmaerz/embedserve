@@ -37,3 +37,10 @@ Intent and reservations expire so a dead client cannot wedge the service. The in
 switch task is shielded from claimant cancellation. If target loading fails after unload,
 the coordinator attempts to restore the old model; otherwise it enters `DEGRADED` while
 health remains available. See `docs/adr/0001-model-busy-and-fair-handoff.md`.
+
+The Pascal/CUDA stack can enter a non-recoverable process-local CUDA error state after
+long E5 drains. Embedserve therefore returns a retryable sanitized failure and schedules
+a systemd-supervised process recycle on CUDA runtime/OOM failures. It also recycles after
+200 successful E5 HTTP requests, before the observed long-run failure window. Clients
+retain request state, honor `Retry-After`, and retry after the process reloads; no second
+model process is started concurrently.
