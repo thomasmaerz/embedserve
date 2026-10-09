@@ -463,3 +463,7 @@ def test_e5_request_budget_schedules_recycle(
     assert health["scheduler"]["restart_scheduled"] is True
     assert health["scheduler"]["successful_requests"]["e5"] == 1
     assert restarts == 0
+    blocked = client.post("/embed", headers=auth(settings), json=payload)
+    assert blocked.status_code == 503
+    assert blocked.headers["Retry-After"] == "8"
+    assert blocked.json()["error"]["code"] == "MODEL_BUSY"

@@ -349,6 +349,16 @@ def create_embedding_app(
     async def infer(
         model: str, texts: list[str], batch_size: int
     ) -> list[list[float]] | Response:
+        if restart_scheduled:
+            snapshot = await coordinator.snapshot()
+            return model_busy_response(
+                ModelBusy(
+                    loaded_model=snapshot.loaded_model,
+                    requested_model=model,
+                    state=snapshot.state,
+                    retry_after_ms=8000,
+                )
+            )
         try:
             admission = await coordinator.acquire(model)
         except ModelBusy as error:
