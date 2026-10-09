@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
 from pathlib import Path
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from embedserve.runtime import E5, NOMIC
 from embedserve.scheduler import CoordinatorState, ModelBusy
 from embedserve.server import (
     NATIVE_DIMENSION,
@@ -16,17 +20,44 @@ from embedserve.server import (
 )
 
 
-class FakeEncoder:
-    model_id = "nomic-ai/nomic-embed-text-v1.5"
+class FakeRuntime:
     device = "cuda"
     gpu_name = "Test GPU"
 
     def __init__(self) -> None:
-        self.seen: list[str] = []
+        self.loaded_model: str | None = NOMIC
+        self.max_resident_models_observed = 1
+        self.last_unload_allocated_bytes: int | None = None
+        self.seen: list[tuple[str, str]] = []
+        self.events: list[tuple[str, str]] = []
+        self.fail_load: set[str] = set()
+        self.fail_encode = False
+        self.encode_started: threading.Event | None = None
+        self.allow_encode: threading.Event | None = None
 
-    def encode(self, texts: list[str], batch_size: int) -> list[list[float]]:
+    def load(self, model: str) -> None:
+        self.events.append(("load", model))
+        if model in self.fail_load:
+            raise RuntimeError("synthetic load failure")
+        assert self.loaded_model is None
+        self.loaded_model = model
+
+    def unload(self, model: str) -> None:
+        self.events.append(("unload", model))
+        assert self.loaded_model == model
+        self.loaded_model = None
+        self.last_unload_allocated_bytes = 0
+
+    def encode(self, model: str, texts: list[str], batch_size: int) -> list[list[float]]:
+        assert self.loaded_model == model
         assert batch_size == 2
-        self.seen.extend(texts)
+        if self.encode_started is not None:
+            self.encode_started.set()
+        if self.allow_encode is not None:
+            self.allow_encode.wait(timeout=5)
+        if self.fail_encode:
+            raise RuntimeError("synthetic inference failure")
+        self.seen.extend((model, text) for text in texts)
         return [
             [float(index + 1)] + [0.0] * (NATIVE_DIMENSION - 1)
             for index, _ in enumerate(texts)
@@ -35,17 +66,24 @@ class FakeEncoder:
 
 @pytest.fixture
 def settings() -> EmbeddingServerSettings:
-    return EmbeddingServerSettings(api_key="a-secure-test-key", batch_size=2, max_items=2)
+    return EmbeddingServerSettings(
+        api_key="a-secure-test-key",
+        batch_size=2,
+        e5_batch_size=2,
+        max_items=2,
+        e5_max_items=2,
+        minimum_residency_seconds=0,
+    )
 
 
 @pytest.fixture
-def encoder() -> FakeEncoder:
-    return FakeEncoder()
+def runtime() -> FakeRuntime:
+    return FakeRuntime()
 
 
 @pytest.fixture
-def client(settings: EmbeddingServerSettings, encoder: FakeEncoder) -> TestClient:
-    return TestClient(create_embedding_app(settings, encoder))
+def client(settings: EmbeddingServerSettings, runtime: FakeRuntime) -> TestClient:
+    return TestClient(create_embedding_app(settings, runtime))
 
 
 def auth(settings: EmbeddingServerSettings) -> dict[str, str]:
@@ -60,6 +98,7 @@ def auth(settings: EmbeddingServerSettings) -> dict[str, str]:
         ("post", "/api/embed", {"input": "hello"}),
         ("get", "/v1/models", None),
         ("post", "/v1/embeddings", {"input": "hello"}),
+        ("post", "/embed", {"inputs": ["passage: hello"]}),
     ],
 )
 def test_every_endpoint_requires_authentication(
@@ -114,7 +153,7 @@ def test_health_and_tags_preserve_identity(
     assert health.status_code == 200
     assert health.json() == {
         "status": "ok",
-        "model": "nomic-ai/nomic-embed-text-v1.5",
+        "model": settings.model_id,
         "ollama_name": "nomic-embed-text:v1.5",
         "model_revision": settings.model_revision,
         "code_revision": settings.code_revision,
@@ -122,6 +161,14 @@ def test_health_and_tags_preserve_identity(
         "device": "cuda",
         "gpu": "Test GPU",
         "native_dimension": 768,
+        "scheduler": {
+            "state": "READY",
+            "loaded_model": "nomic",
+            "active_requests": 0,
+            "switch_in_progress": False,
+            "single_residency_verified": True,
+            "last_unload_allocated_bytes": None,
+        },
     }
     model = tags.json()["models"][0]
     assert model["name"] == "nomic-embed-text:v1.5"
@@ -143,12 +190,12 @@ def test_ollama_and_openai_shapes_preserve_order(
 
 
 def test_server_does_not_add_prefixes(
-    client: TestClient, settings: EmbeddingServerSettings, encoder: FakeEncoder
+    client: TestClient, settings: EmbeddingServerSettings, runtime: FakeRuntime
 ) -> None:
     values = ["search_document: exact document", "search_query: exact query"]
     response = client.post("/api/embed", headers=auth(settings), json={"input": values})
     assert response.status_code == 200
-    assert encoder.seen == values
+    assert runtime.seen == [(NOMIC, value) for value in values]
 
 
 @pytest.mark.parametrize(
@@ -181,7 +228,7 @@ def test_server_rejects_malformed_and_oversized_bodies(
     limited = EmbeddingServerSettings(
         api_key=settings.api_key, max_chars=512, max_body_bytes=600
     )
-    limited_client = TestClient(create_embedding_app(limited, FakeEncoder()))
+    limited_client = TestClient(create_embedding_app(limited, FakeRuntime()))
     oversized = limited_client.post(
         "/api/embed",
         headers=auth(settings),
@@ -213,5 +260,129 @@ def test_settings_reject_insecure_key_file(
 
 
 def test_settings_reject_arbitrary_model() -> None:
-    with pytest.raises(ValueError, match="unsupported model"):
+    with pytest.raises(ValueError, match="unsupported Nomic model"):
         EmbeddingServerSettings(api_key="a-secure-test-key", model_id="other/model")
+
+
+def test_tei_contract_switches_to_e5_without_changing_inputs(
+    client: TestClient, settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    inputs = ["passage: synthetic English role", "passage: synthetische Stelle"]
+    first = client.post("/embed", headers=auth(settings), json={"inputs": inputs})
+    assert first.status_code == 503
+    assert first.headers["Retry-After"] == "2"
+    assert first.json()["error"]["code"] == "MODEL_BUSY"
+    assert first.json()["error"]["loaded_model"] == NOMIC
+    assert first.json()["error"]["requested_model"] == E5
+
+    second = client.post("/embed", headers=auth(settings), json={"inputs": inputs})
+    assert second.status_code == 200
+    assert isinstance(second.json(), list)
+    assert len(second.json()) == 2
+    assert all(len(vector) == 768 for vector in second.json())
+    assert runtime.seen[-2:] == [(E5, text) for text in inputs]
+    assert runtime.events == [("unload", NOMIC), ("load", E5)]
+    assert runtime.loaded_model == E5
+    assert runtime.last_unload_allocated_bytes == 0
+
+
+def test_reverse_e5_to_nomic_handoff(
+    client: TestClient, settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    inputs = ["passage: synthetic role"]
+    assert client.post("/embed", headers=auth(settings), json={"inputs": inputs}).status_code == 503
+    assert client.post("/embed", headers=auth(settings), json={"inputs": inputs}).status_code == 200
+
+    payload = {"model": settings.model_alias, "input": ["search_query: synthetic role"]}
+    first = client.post("/api/embed", headers=auth(settings), json=payload)
+    assert first.status_code == 503
+    second = client.post("/api/embed", headers=auth(settings), json=payload)
+    assert second.status_code == 200
+    assert runtime.events == [
+        ("unload", NOMIC),
+        ("load", E5),
+        ("unload", E5),
+        ("load", NOMIC),
+    ]
+    assert runtime.loaded_model == NOMIC
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"input": ["passage: wrong field"]},
+        {"inputs": "passage: must be a list"},
+        {"inputs": []},
+        {"inputs": ["one", "two", "three"]},
+        {"inputs": ["one"], "model": "arbitrary"},
+    ],
+)
+def test_tei_rejects_invalid_body(
+    client: TestClient, settings: EmbeddingServerSettings, payload: dict[str, object]
+) -> None:
+    assert client.post("/embed", headers=auth(settings), json=payload).status_code == 400
+
+
+def test_e5_load_failure_restores_nomic(
+    client: TestClient, settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    runtime.fail_load.add(E5)
+    payload = {"inputs": ["passage: synthetic role"]}
+    assert client.post("/embed", headers=auth(settings), json=payload).status_code == 503
+    failed = client.post("/embed", headers=auth(settings), json=payload)
+    assert failed.status_code == 503
+    assert failed.json()["error"] == {
+        "code": "MODEL_LOAD_FAILED",
+        "message": "Requested model could not be loaded.",
+        "retryable": True,
+        "requested_model": E5,
+        "restored_model": NOMIC,
+    }
+    assert runtime.loaded_model == NOMIC
+
+
+@pytest.mark.asyncio
+async def test_cancelled_http_request_waits_for_inference_cleanup(
+    settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    runtime.encode_started = threading.Event()
+    runtime.allow_encode = threading.Event()
+    app = create_embedding_app(settings, runtime)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://embedserve"
+    ) as http:
+        request = asyncio.create_task(
+            http.post(
+                "/api/embed",
+                headers=auth(settings),
+                json={"input": ["search_query: synthetic cancellation"]},
+            )
+        )
+        await asyncio.to_thread(runtime.encode_started.wait, 5)
+        request.cancel()
+        runtime.allow_encode.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        health = await http.get("/health", headers=auth(settings))
+    assert health.json()["scheduler"]["active_requests"] == 0
+    assert health.json()["scheduler"]["state"] == "READY"
+
+
+def test_inference_failure_is_sanitized_and_releases_admission(
+    client: TestClient, settings: EmbeddingServerSettings, runtime: FakeRuntime
+) -> None:
+    runtime.fail_encode = True
+    failed = client.post(
+        "/api/embed", headers=auth(settings), json={"input": ["search_query: synthetic"]}
+    )
+    assert failed.status_code == 500
+    assert failed.json() == {
+        "error": {
+            "code": "INFERENCE_FAILED",
+            "message": "Embedding inference failed.",
+            "retryable": False,
+        }
+    }
+    runtime.fail_encode = False
+    health = client.get("/health", headers=auth(settings))
+    assert health.json()["scheduler"]["active_requests"] == 0

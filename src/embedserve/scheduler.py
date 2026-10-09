@@ -41,6 +41,7 @@ class CoordinatorSnapshot:
     switch_in_progress: bool
     last_activity: float | None
     last_successful_switch: float | None
+    switch_protected_until: float | None
     model_load_failure: ModelFailure | None
 
 
@@ -127,17 +128,21 @@ class ModelCoordinator:
         unload_model: Callable[[str], Awaitable[None]],
         intent_ttl_seconds: float = 10.0,
         reservation_ttl_seconds: float = 5.0,
+        minimum_residency_seconds: float = 5.0,
         retry_after_ms: int = 1500,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if intent_ttl_seconds <= 0 or reservation_ttl_seconds <= 0:
             raise ValueError("intent and reservation TTLs must be positive")
+        if minimum_residency_seconds < 0:
+            raise ValueError("minimum residency must not be negative")
         if retry_after_ms <= 0:
             raise ValueError("retry_after_ms must be positive")
         self._load_model = load_model
         self._unload_model = unload_model
         self._intent_ttl = intent_ttl_seconds
         self._reservation_ttl = reservation_ttl_seconds
+        self._minimum_residency = minimum_residency_seconds
         self._retry_after_ms = retry_after_ms
         self._monotonic = monotonic
         self._lock = asyncio.Lock()
@@ -172,6 +177,9 @@ class ModelCoordinator:
 
                 self._pending_model = requested_model
                 self._intent_expires_at = now + self._intent_ttl
+                protected_until = self._protected_until()
+                if protected_until is not None and now < protected_until:
+                    raise self._busy(requested_model)
                 created_reservation = reservation is None or reservation.model != requested_model
                 if created_reservation:
                     self._reservation = _Reservation(
@@ -217,6 +225,7 @@ class ModelCoordinator:
                 switch_in_progress=self._switch_task is not None,
                 last_activity=self._last_activity,
                 last_successful_switch=self._last_successful_switch,
+                switch_protected_until=self._protected_until(),
                 model_load_failure=self._model_load_failure,
             )
 
@@ -326,3 +335,8 @@ class ModelCoordinator:
             state=self._state,
             retry_after_ms=self._retry_after_ms,
         )
+
+    def _protected_until(self) -> float | None:
+        if self._last_successful_switch is None:
+            return None
+        return self._last_successful_switch + self._minimum_residency

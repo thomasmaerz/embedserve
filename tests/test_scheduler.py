@@ -47,13 +47,16 @@ class Runtime:
         self.resident.remove(model)
 
 
-def coordinator(runtime: Runtime, clock: Clock | None = None) -> ModelCoordinator:
+def coordinator(
+    runtime: Runtime, clock: Clock | None = None, minimum_residency: float = 0
+) -> ModelCoordinator:
     return ModelCoordinator(
         loaded_model=next(iter(runtime.resident), None),
         load_model=runtime.load,
         unload_model=runtime.unload,
         intent_ttl_seconds=10,
         reservation_ttl_seconds=5,
+        minimum_residency_seconds=minimum_residency,
         retry_after_ms=1500,
         monotonic=clock or Clock(),
     )
@@ -138,6 +141,32 @@ async def test_reverse_handoff() -> None:
     nomic = await manager.acquire("nomic")
     await nomic.release()
     assert runtime.events == [("unload", "e5"), ("load", "nomic")]
+
+
+@pytest.mark.asyncio
+async def test_minimum_residency_prevents_model_thrashing() -> None:
+    runtime = Runtime()
+    clock = Clock()
+    manager = coordinator(runtime, clock, minimum_residency=5)
+    with pytest.raises(ModelBusy):
+        await manager.acquire("e5")
+    e5 = await manager.acquire("e5")
+    await e5.release()
+
+    with pytest.raises(ModelBusy):
+        await manager.acquire("nomic")
+    assert (await manager.snapshot()).reserved_model is None
+    clock.advance(5)
+    with pytest.raises(ModelBusy):
+        await manager.acquire("nomic")
+    nomic = await manager.acquire("nomic")
+    await nomic.release()
+    assert runtime.events == [
+        ("unload", "nomic"),
+        ("load", "e5"),
+        ("unload", "e5"),
+        ("load", "nomic"),
+    ]
 
 
 @pytest.mark.asyncio

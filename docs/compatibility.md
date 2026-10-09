@@ -15,6 +15,12 @@
 | Request ordering | Input order | Embedserve | Tested |
 | Ollama endpoint | `/api/embed` | Embedserve | Supported subset |
 | OpenAI endpoint | `/v1/embeddings` | Embedserve | Supported subset |
+| E5 source model | `intfloat/multilingual-e5-base` | Embedserve | Pinned |
+| E5 revision | `d128750...a4502a` | Embedserve | Pinned |
+| E5 endpoint | `/embed` | Embedserve | TEI subset |
+| E5 document/query prefix | `passage: ` / `query: ` | FreeHire client | Client-owned |
+| E5 output | 768 normalized floats | Embedserve | Native contract |
+| E5 sequence limit | 512 tokens | Embedserve | Native contract |
 
 The model weight revision is pinned separately from the compatibility digest. This is
 intentional: the deployed SlackQuery generation was created with the historical Ollama

@@ -1,17 +1,17 @@
-"""Authenticated PyTorch embedding service with Ollama and OpenAI-compatible APIs."""
+"""Authenticated, single-GPU embedding service with explicit API contracts."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import secrets
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
 
 import uvicorn
 from starlette.applications import Starlette
@@ -20,24 +20,24 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from embedserve.scheduler import ModelBusy
+from embedserve.runtime import (
+    E5,
+    E5_MODEL_ID,
+    E5_MODEL_REVISION,
+    NATIVE_DIMENSION,
+    NOMIC,
+    NOMIC_CODE_REVISION,
+    NOMIC_MODEL_ID,
+    NOMIC_MODEL_REVISION,
+    Runtime,
+    SentenceTransformerRuntime,
+)
+from embedserve.scheduler import ModelBusy, ModelCoordinator, ModelLoadError
 
-NATIVE_DIMENSION = 768
-DEFAULT_MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
 DEFAULT_MODEL_ALIAS = "nomic-embed-text:v1.5"
-DEFAULT_MODEL_REVISION = "e9b6763023c676ca8431644204f50c2b100d9aab"
-DEFAULT_CODE_REVISION = "7710840340a098cfb869c4f65e87cf2b1b70caca"
 DEFAULT_MODEL_DIGEST = "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
 COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
-
-
-class Encoder(Protocol):
-    model_id: str
-    device: str
-    gpu_name: str | None
-
-    def encode(self, texts: list[str], batch_size: int) -> list[list[float]]: ...
 
 
 def _validated_key(value: str) -> str:
@@ -68,40 +68,62 @@ class EmbeddingServerSettings:
     api_key: str
     host: str = "127.0.0.1"
     port: int = 11435
-    model_id: str = DEFAULT_MODEL_ID
+    model_id: str = NOMIC_MODEL_ID
     model_alias: str = DEFAULT_MODEL_ALIAS
-    model_revision: str = DEFAULT_MODEL_REVISION
-    code_revision: str = DEFAULT_CODE_REVISION
+    model_revision: str = NOMIC_MODEL_REVISION
+    code_revision: str = NOMIC_CODE_REVISION
     model_digest: str = DEFAULT_MODEL_DIGEST
+    e5_model_id: str = E5_MODEL_ID
+    e5_model_revision: str = E5_MODEL_REVISION
     batch_size: int = 32
+    e5_batch_size: int = 1
     max_items: int = 256
+    e5_max_items: int = 32
     max_chars: int = 1_000_000
     max_body_bytes: int = 2_000_000
     require_cuda: bool = True
+    max_residual_cuda_bytes: int = 16_777_216
+    intent_ttl_seconds: float = 30.0
+    reservation_ttl_seconds: float = 10.0
+    minimum_residency_seconds: float = 5.0
+    retry_after_ms: int = 1500
     log_level: str = "info"
 
     def __post_init__(self) -> None:
         _validated_key(self.api_key)
-        if self.model_id != DEFAULT_MODEL_ID:
-            raise ValueError(f"unsupported model: {self.model_id}")
+        if self.model_id != NOMIC_MODEL_ID:
+            raise ValueError(f"unsupported Nomic model: {self.model_id}")
         if self.model_alias != DEFAULT_MODEL_ALIAS:
             raise ValueError(f"unsupported model alias: {self.model_alias}")
-        if COMMIT_PATTERN.fullmatch(self.model_revision) is None:
-            raise ValueError("model revision must be a 40-character commit hash")
-        if COMMIT_PATTERN.fullmatch(self.code_revision) is None:
-            raise ValueError("code revision must be a 40-character commit hash")
+        if self.e5_model_id != E5_MODEL_ID:
+            raise ValueError(f"unsupported E5 model: {self.e5_model_id}")
+        for name, revision in {
+            "Nomic model": self.model_revision,
+            "Nomic code": self.code_revision,
+            "E5 model": self.e5_model_revision,
+        }.items():
+            if COMMIT_PATTERN.fullmatch(revision) is None:
+                raise ValueError(f"{name} revision must be a 40-character commit hash")
         if DIGEST_PATTERN.fullmatch(self.model_digest) is None:
             raise ValueError("model digest must be a 64-character SHA-256 digest")
         if not 1 <= self.port <= 65535:
             raise ValueError("port must be between 1 and 65535")
-        if not 1 <= self.batch_size <= 256:
-            raise ValueError("batch size must be between 1 and 256")
-        if not 1 <= self.max_items <= 256:
-            raise ValueError("max items must be between 1 and 256")
+        if not 1 <= self.batch_size <= 256 or not 1 <= self.e5_batch_size <= 32:
+            raise ValueError("model batch size is outside its supported range")
+        if not 1 <= self.max_items <= 256 or not 1 <= self.e5_max_items <= 32:
+            raise ValueError("request item limit is outside its supported range")
         if self.max_chars < 512:
             raise ValueError("max characters must be at least 512")
         if self.max_body_bytes < self.max_chars:
             raise ValueError("max body bytes must cover max characters")
+        if self.max_residual_cuda_bytes < 0:
+            raise ValueError("max residual CUDA bytes must not be negative")
+        if self.intent_ttl_seconds <= 0 or self.reservation_ttl_seconds <= 0:
+            raise ValueError("scheduler TTLs must be positive")
+        if self.minimum_residency_seconds < 0:
+            raise ValueError("minimum residency must not be negative")
+        if self.retry_after_ms <= 0:
+            raise ValueError("retry_after_ms must be positive")
 
     @classmethod
     def from_env(cls) -> EmbeddingServerSettings:
@@ -109,64 +131,34 @@ class EmbeddingServerSettings:
             api_key=_load_api_key(),
             host=os.getenv("EMBEDSERVE_HOST", "127.0.0.1"),
             port=int(os.getenv("EMBEDSERVE_PORT", "11435")),
-            model_id=os.getenv("EMBEDSERVE_MODEL_ID", DEFAULT_MODEL_ID),
+            model_id=os.getenv("EMBEDSERVE_MODEL_ID", NOMIC_MODEL_ID),
             model_alias=os.getenv("EMBEDSERVE_MODEL_ALIAS", DEFAULT_MODEL_ALIAS),
-            model_revision=os.getenv("EMBEDSERVE_MODEL_REVISION", DEFAULT_MODEL_REVISION),
-            code_revision=os.getenv("EMBEDSERVE_CODE_REVISION", DEFAULT_CODE_REVISION),
+            model_revision=os.getenv("EMBEDSERVE_MODEL_REVISION", NOMIC_MODEL_REVISION),
+            code_revision=os.getenv("EMBEDSERVE_CODE_REVISION", NOMIC_CODE_REVISION),
             model_digest=os.getenv("EMBEDSERVE_MODEL_DIGEST", DEFAULT_MODEL_DIGEST),
+            e5_model_id=os.getenv("EMBEDSERVE_E5_MODEL_ID", E5_MODEL_ID),
+            e5_model_revision=os.getenv("EMBEDSERVE_E5_MODEL_REVISION", E5_MODEL_REVISION),
             batch_size=int(os.getenv("EMBEDSERVE_BATCH_SIZE", "32")),
+            e5_batch_size=int(os.getenv("EMBEDSERVE_E5_BATCH_SIZE", "1")),
             max_items=int(os.getenv("EMBEDSERVE_MAX_ITEMS", "256")),
+            e5_max_items=int(os.getenv("EMBEDSERVE_E5_MAX_ITEMS", "32")),
             max_chars=int(os.getenv("EMBEDSERVE_MAX_CHARS", "1000000")),
             max_body_bytes=int(os.getenv("EMBEDSERVE_MAX_BODY_BYTES", "2000000")),
             require_cuda=os.getenv("EMBEDSERVE_REQUIRE_CUDA", "true").lower()
             not in {"0", "false", "no"},
+            max_residual_cuda_bytes=int(
+                os.getenv("EMBEDSERVE_MAX_RESIDUAL_CUDA_BYTES", "16777216")
+            ),
+            intent_ttl_seconds=float(os.getenv("EMBEDSERVE_INTENT_TTL_SECONDS", "30")),
+            reservation_ttl_seconds=float(
+                os.getenv("EMBEDSERVE_RESERVATION_TTL_SECONDS", "10")
+            ),
+            minimum_residency_seconds=float(
+                os.getenv("EMBEDSERVE_MINIMUM_RESIDENCY_SECONDS", "5")
+            ),
+            retry_after_ms=int(os.getenv("EMBEDSERVE_RETRY_AFTER_MS", "1500")),
             log_level=os.getenv("EMBEDSERVE_LOG_LEVEL", "info"),
         )
-
-
-class SentenceTransformerEncoder:
-    def __init__(self, settings: EmbeddingServerSettings) -> None:
-        try:
-            import torch  # type: ignore[import-not-found]
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
-        except ImportError as error:
-            raise RuntimeError(
-                "embedding dependencies are missing; install embedserve[cuda-pascal]"
-            ) from error
-
-        cuda = torch.cuda.is_available()
-        if settings.require_cuda and not cuda:
-            raise RuntimeError("CUDA is required but torch.cuda.is_available() is false")
-        self.model_id = settings.model_id
-        self.device = "cuda" if cuda else "cpu"
-        self.gpu_name = torch.cuda.get_device_name(0) if cuda else None
-        self._torch = torch
-        self._model = SentenceTransformer(
-            settings.model_id,
-            revision=settings.model_revision,
-            trust_remote_code=True,
-            device=self.device,
-            model_kwargs={"code_revision": settings.code_revision},
-            config_kwargs={"code_revision": settings.code_revision},
-        )
-        self._model.max_seq_length = 2048
-        dimension = self._model.get_sentence_embedding_dimension()
-        if dimension != NATIVE_DIMENSION:
-            raise RuntimeError(
-                f"model native dimension must be {NATIVE_DIMENSION}, got {dimension}"
-            )
-
-    def encode(self, texts: list[str], batch_size: int) -> list[list[float]]:
-        with self._torch.inference_mode():
-            values = self._model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=False,
-            )
-        rows = cast(list[list[float]], values.tolist())
-        return [[float(value) for value in row] for row in rows]
 
 
 def _unauthorized() -> JSONResponse:
@@ -182,6 +174,21 @@ def model_busy_response(error: ModelBusy) -> JSONResponse:
         error.payload(),
         status_code=503,
         headers={"Retry-After": str(error.retry_after_seconds)},
+    )
+
+
+def model_load_error_response(error: ModelLoadError) -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": {
+                "code": "MODEL_LOAD_FAILED",
+                "message": "Requested model could not be loaded.",
+                "retryable": error.failure.retryable,
+                "requested_model": error.failure.model,
+                "restored_model": error.failure.restored_model,
+            }
+        },
+        status_code=503 if error.failure.retryable else 500,
     )
 
 
@@ -207,8 +214,24 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) -> ASGIApp:
-    lock = asyncio.Lock()
+def create_embedding_app(settings: EmbeddingServerSettings, runtime: Runtime) -> ASGIApp:
+    inference_lock = asyncio.Lock()
+
+    async def load_model(model: str) -> None:
+        await asyncio.to_thread(runtime.load, model)
+
+    async def unload_model(model: str) -> None:
+        await asyncio.to_thread(runtime.unload, model)
+
+    coordinator = ModelCoordinator(
+        loaded_model=runtime.loaded_model,
+        load_model=load_model,
+        unload_model=unload_model,
+        intent_ttl_seconds=settings.intent_ttl_seconds,
+        reservation_ttl_seconds=settings.reservation_ttl_seconds,
+        minimum_residency_seconds=settings.minimum_residency_seconds,
+        retry_after_ms=settings.retry_after_ms,
+    )
 
     async def read_body(request: Request) -> bytes | Response:
         content_length = request.headers.get("Content-Length")
@@ -228,7 +251,7 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
                 return JSONResponse({"error": "request body too large"}, status_code=413)
         return bytes(body)
 
-    async def parse_input(request: Request) -> tuple[str, list[str]] | Response:
+    async def read_object(request: Request) -> dict[str, object] | Response:
         body = await read_body(request)
         if isinstance(body, Response):
             return body
@@ -238,6 +261,34 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
         if not isinstance(payload, dict):
             return JSONResponse({"error": "request body must be an object"}, status_code=400)
+        return payload
+
+    def validate_texts(
+        source: object, *, allow_string: bool, max_items: int
+    ) -> list[str] | Response:
+        texts = [source] if allow_string and isinstance(source, str) else source
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or not all(isinstance(text, str) for text in texts)
+        ):
+            expected = "a string or non-empty string list" if allow_string else "a string list"
+            return JSONResponse({"error": f"input must be {expected}"}, status_code=400)
+        if len(texts) > max_items:
+            return JSONResponse(
+                {"error": f"batch exceeds maximum of {max_items} items"}, status_code=400
+            )
+        if sum(len(text) for text in texts) > settings.max_chars:
+            return JSONResponse(
+                {"error": f"input exceeds maximum of {settings.max_chars} characters"},
+                status_code=400,
+            )
+        return texts
+
+    async def parse_nomic(request: Request) -> tuple[str, list[str]] | Response:
+        payload = await read_object(request)
+        if isinstance(payload, Response):
+            return payload
         model = payload.get("model", settings.model_alias)
         if model != settings.model_alias:
             return JSONResponse({"error": f"unknown model: {model}"}, status_code=404)
@@ -246,57 +297,88 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
             return JSONResponse(
                 {"error": f"dimensions must be {NATIVE_DIMENSION}"}, status_code=400
             )
-        encoding_format = payload.get("encoding_format")
-        if encoding_format not in {None, "float"}:
+        if payload.get("encoding_format") not in {None, "float"}:
             return JSONResponse({"error": "only float encoding is supported"}, status_code=400)
         if payload.get("truncate") is False:
             return JSONResponse({"error": "truncate=false is not supported"}, status_code=400)
-        source = payload.get("input")
-        texts = [source] if isinstance(source, str) else source
-        if (
-            not isinstance(texts, list)
-            or not texts
-            or not all(isinstance(text, str) for text in texts)
-        ):
-            return JSONResponse(
-                {"error": "input must be a string or non-empty string list"}, status_code=400
-            )
-        if len(texts) > settings.max_items:
-            return JSONResponse(
-                {"error": f"batch exceeds maximum of {settings.max_items} items"}, status_code=400
-            )
-        if sum(len(text) for text in texts) > settings.max_chars:
-            return JSONResponse(
-                {"error": f"input exceeds maximum of {settings.max_chars} characters"},
-                status_code=400,
-            )
+        texts = validate_texts(
+            payload.get("input"), allow_string=True, max_items=settings.max_items
+        )
+        if isinstance(texts, Response):
+            return texts
         return settings.model_alias, texts
 
-    async def encode(request: Request) -> tuple[str, list[str], list[list[float]]] | Response:
-        parsed = await parse_input(request)
-        if isinstance(parsed, Response):
-            return parsed
-        model, texts = parsed
-        async with lock:
-            vectors = await asyncio.to_thread(encoder.encode, texts, settings.batch_size)
+    async def parse_e5(request: Request) -> list[str] | Response:
+        payload = await read_object(request)
+        if isinstance(payload, Response):
+            return payload
+        if set(payload) != {"inputs"}:
+            return JSONResponse(
+                {"error": "request body must contain only inputs"}, status_code=400
+            )
+        return validate_texts(
+            payload.get("inputs"), allow_string=False, max_items=settings.e5_max_items
+        )
+
+    async def infer(
+        model: str, texts: list[str], batch_size: int
+    ) -> list[list[float]] | Response:
+        try:
+            admission = await coordinator.acquire(model)
+        except ModelBusy as error:
+            return model_busy_response(error)
+        except ModelLoadError as error:
+            return model_load_error_response(error)
+        async with admission, inference_lock:
+            task = asyncio.create_task(
+                asyncio.to_thread(runtime.encode, model, texts, batch_size),
+                name=f"embedserve-infer-{model}",
+            )
+            try:
+                vectors = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+            except Exception:
+                return JSONResponse(
+                    {
+                        "error": {
+                            "code": "INFERENCE_FAILED",
+                            "message": "Embedding inference failed.",
+                            "retryable": False,
+                        }
+                    },
+                    status_code=500,
+                )
         if len(vectors) != len(texts) or any(
-            len(vector) != NATIVE_DIMENSION for vector in vectors
+            len(vector) != NATIVE_DIMENSION
+            or not all(math.isfinite(value) for value in vector)
+            for vector in vectors
         ):
             return JSONResponse({"error": "encoder returned invalid vector dimensions"}, 500)
-        return model, texts, vectors
+        return vectors
 
     async def health(_: Request) -> Response:
+        snapshot = await coordinator.snapshot()
         return JSONResponse(
             {
                 "status": "ok",
-                "model": encoder.model_id,
+                "model": settings.model_id,
                 "ollama_name": settings.model_alias,
                 "model_revision": settings.model_revision,
                 "code_revision": settings.code_revision,
                 "model_digest": settings.model_digest,
-                "device": encoder.device,
-                "gpu": encoder.gpu_name,
+                "device": runtime.device,
+                "gpu": runtime.gpu_name,
                 "native_dimension": NATIVE_DIMENSION,
+                "scheduler": {
+                    "state": snapshot.state,
+                    "loaded_model": snapshot.loaded_model,
+                    "active_requests": snapshot.active_requests,
+                    "switch_in_progress": snapshot.switch_in_progress,
+                    "single_residency_verified": runtime.max_resident_models_observed <= 1,
+                    "last_unload_allocated_bytes": runtime.last_unload_allocated_bytes,
+                },
             }
         )
 
@@ -323,10 +405,13 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
         )
 
     async def ollama_embed(request: Request) -> Response:
-        result = await encode(request)
-        if isinstance(result, Response):
-            return result
-        model, _, vectors = result
+        parsed = await parse_nomic(request)
+        if isinstance(parsed, Response):
+            return parsed
+        model, texts = parsed
+        vectors = await infer(NOMIC, texts, settings.batch_size)
+        if isinstance(vectors, Response):
+            return vectors
         return JSONResponse({"model": model, "embeddings": vectors})
 
     async def openai_models(_: Request) -> Response:
@@ -340,10 +425,13 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
         )
 
     async def openai_embed(request: Request) -> Response:
-        result = await encode(request)
-        if isinstance(result, Response):
-            return result
-        model, texts, vectors = result
+        parsed = await parse_nomic(request)
+        if isinstance(parsed, Response):
+            return parsed
+        model, texts = parsed
+        vectors = await infer(NOMIC, texts, settings.batch_size)
+        if isinstance(vectors, Response):
+            return vectors
         token_estimate = sum(len(text) // 4 for text in texts)
         return JSONResponse(
             {
@@ -357,6 +445,15 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
             }
         )
 
+    async def tei_embed(request: Request) -> Response:
+        texts = await parse_e5(request)
+        if isinstance(texts, Response):
+            return texts
+        vectors = await infer(E5, texts, settings.e5_batch_size)
+        if isinstance(vectors, Response):
+            return vectors
+        return JSONResponse(vectors)
+
     app = Starlette(
         routes=[
             Route("/health", health),
@@ -364,6 +461,7 @@ def create_embedding_app(settings: EmbeddingServerSettings, encoder: Encoder) ->
             Route("/api/embed", ollama_embed, methods=["POST"]),
             Route("/v1/models", openai_models),
             Route("/v1/embeddings", openai_embed, methods=["POST"]),
+            Route("/embed", tei_embed, methods=["POST"]),
         ]
     )
     return BearerAuthMiddleware(app, settings.api_key)
@@ -376,11 +474,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         settings = EmbeddingServerSettings.from_env()
-        encoder = SentenceTransformerEncoder(settings)
+        runtime = SentenceTransformerRuntime(settings)
+        runtime.load(NOMIC)
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     uvicorn.run(
-        create_embedding_app(settings, encoder),
+        create_embedding_app(settings, runtime),
         host=args.host or settings.host,
         port=args.port or settings.port,
         log_level=settings.log_level,

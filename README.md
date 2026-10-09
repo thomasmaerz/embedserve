@@ -4,7 +4,7 @@
 
 ### A small, authenticated PyTorch embedding service for compatibility-sensitive local workloads
 
-`Ollama API subset` · `OpenAI API subset` · `CUDA` · `Pinned Nomic` · `LAN deployment`
+`Ollama API subset` · `OpenAI API subset` · `TEI subset` · `CUDA` · `Pinned models`
 
 **Keep it private. Every route requires a bearer key. Do not expose port `11435` to the internet.**
 
@@ -13,13 +13,15 @@
 ---
 
 Embedserve extracts SlackQuery's proven PyTorch path into an independent service. It
-serves raw 768-dimensional `nomic-ai/nomic-embed-text-v1.5` vectors while preserving
-SlackQuery's exact alias and digest contract. SlackQuery remains responsible for
+serves pinned Nomic and multilingual E5 models with exactly one GPU-resident model at a
+time. Nomic returns raw 768-dimensional vectors while preserving SlackQuery's exact
+alias and digest contract. SlackQuery remains responsible for
 adding `search_document: ` or `search_query: `, taking the first 512 Matryoshka
 dimensions, and L2-normalizing the stored vector.
 
-The current release is intentionally Nomic-only. Multi-model Nomic/E5 scheduling and
-the FreeHire TEI route are post-checkpoint work and are not claimed by this release.
+E5 implements FreeHire's TEI request and response shape at `/embed`. FreeHire owns the
+`passage: ` or `query: ` prefix; the server applies the model's native 512-token
+truncation and returns normalized 768-dimensional vectors.
 
 ## API surface
 
@@ -30,10 +32,13 @@ the FreeHire TEI route are post-checkpoint work and are not claimed by this rele
 | `POST /api/embed` | Ollama subset | Bearer | Raw 768-dimensional vectors |
 | `GET /v1/models` | OpenAI subset | Bearer | Model discovery |
 | `POST /v1/embeddings` | OpenAI subset | Bearer | OpenAI-shaped vectors |
+| `POST /embed` | TEI subset | Bearer | Normalized E5 vectors |
 
-Only `nomic-embed-text:v1.5` is accepted. The server does not add task prefixes and
-does not normalize or truncate vector dimensions. The encoder truncates token input at
-Nomic's configured 2048-token sequence limit; `truncate=false` is rejected.
+Only the pinned Nomic and E5 models are loadable. Request data cannot select arbitrary
+models. The server does not add task prefixes or truncate vector dimensions. Nomic uses
+its 2048-token limit and raw output; E5 uses its 512-token limit and normalized output.
+Alternate-model contention returns documented `503 MODEL_BUSY` responses so clients can
+retry with bounded full jitter.
 
 ## Quick start
 

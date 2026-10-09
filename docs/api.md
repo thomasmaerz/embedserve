@@ -26,13 +26,52 @@ Keys and request text are never included in application error messages.
 
 The example vector is abbreviated. Actual rows contain exactly 768 floats. `input` may
 be one string or a non-empty string array. `keep_alive` is accepted and ignored because
-the model remains resident for the process lifetime.
+the lifecycle coordinator controls residency.
 
 ## OpenAI-compatible embedding
 
 `POST /v1/embeddings` accepts the same `model` and `input`. It returns `object`, indexed
 `data`, `model`, and approximate `usage` fields. Only `encoding_format: "float"` and
 `dimensions: 768` are accepted.
+
+## TEI-compatible E5 embedding
+
+`POST /embed` accepts exactly one `inputs` string array and returns a bare array of
+vectors:
+
+```json
+{"inputs":["passage: Synthetic platform role."]}
+```
+
+```json
+[[0.01, -0.02]]
+```
+
+The vector is abbreviated; each row contains 768 normalized floats. Prefixes are
+client-owned. The endpoint allows at most 32 inputs and uses the pinned
+`intfloat/multilingual-e5-base` revision.
+
+## Model-busy response
+
+An alternate-model request first reserves a bounded handoff and receives `503` with an
+integer-seconds `Retry-After` header:
+
+```json
+{
+  "error": {
+    "code": "MODEL_BUSY",
+    "message": "Requested model is waiting for the active model to finish.",
+    "retryable": true,
+    "loaded_model": "nomic",
+    "requested_model": "e5",
+    "state": "SWITCH_RESERVED",
+    "retry_after_ms": 1500
+  }
+}
+```
+
+Clients retry only this documented error, honor `Retry-After`, and bound attempts and
+total elapsed time. `429` remains reserved for rate limiting.
 
 ## Discovery
 
@@ -50,9 +89,10 @@ the model remains resident for the process lifetime.
 | Invalid JSON or option | `400` | No |
 | Unsupported model alias | `404` | No |
 | Body over 2,000,000 bytes | `413` | No |
-| Batch over 256 items | `400` | No |
+| Nomic batch over 256 or E5 batch over 32 | `400` | No |
 | Aggregate text over 1,000,000 characters | `400` | No |
 | Invalid encoder output | `500` | Operator investigation |
+| Alternate model owns GPU | `503` | Yes, `MODEL_BUSY` only |
+| Model load failed | `503` | Yes when `retryable=true` |
 
-Limits are configurable downward or upward within validated bounds. Phase 1 has no
-model-busy response because it serves only one statically loaded model.
+Limits are configurable within validated bounds.
