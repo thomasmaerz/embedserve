@@ -1,0 +1,31 @@
+# Rollback and recovery
+
+Prepare rollback before changing the live symlink, unit, key, or client configuration.
+
+## Server release
+
+1. Stop new embedding jobs.
+2. Point `/opt/embedserve/current` to the previous tested release.
+3. Restore the previous `/etc/systemd/system/embedserve.service` if the unit changed.
+4. Run `systemctl daemon-reload && systemctl restart embedserve.service`.
+5. Verify authenticated health, tags, a synthetic vector, VRAM, and logs.
+
+## API key
+
+During the bounded rotation window, preserve the prior mode-`0600` files on server and
+approved clients. To roll back, atomically restore all prior files, compare fingerprints,
+restart server and clients, and test missing/incorrect/valid authentication. Never make
+the service temporarily unauthenticated.
+
+## SlackQuery clients
+
+Restore the prior `.env` artifact, file mode, and process definition. Restart the local
+or ETL process, run `slackquery embedding-status`, then run representative lexical,
+semantic, and hybrid searches. The legacy source copy is not a deployment rollback;
+use the preserved deployable release artifact.
+
+## Partial operations
+
+Phase 1 does not migrate stored vectors, so rollback requires no data rewrite. Later E5
+backfills must retain model/content provenance and delete or isolate only rows from the
+aborted generation; never mix old and new model vectors.

@@ -1,0 +1,53 @@
+[project]
+name = "embedserve"
+version = "0.1.0"
+description = "Authenticated, compatibility-focused PyTorch embedding service"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "starlette==0.48.0",
+  "uvicorn[standard]==0.35.0",
+]
+
+[project.optional-dependencies]
+cuda-pascal = [
+  "einops==0.8.1",
+  "sentence-transformers==3.0.1",
+  "torch==2.4.1",
+  "transformers==4.44.2",
+]
+dev = [
+  "httpx==0.28.1",
+  "mypy==1.18.2",
+  "pytest==8.4.2",
+  "pytest-asyncio==1.2.0",
+  "ruff==0.14.1",
+]
+
+[project.scripts]
+embedserve = "embedserve.server:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/embedserve"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["embedserve"]
